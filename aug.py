@@ -22,9 +22,11 @@ def cutmix(model, s_x, s_y, t_x, alpha):
     return new_x, new_y
 
 def mixup(model, s_x, s_y, t_x, alpha):
-    mu = np.random.beta(alpha, alpha)
+    mu = np.random.beta(alpha, alpha, size=(s_x.size(0)))
     t_y = get_predictions(model, t_x)
     lmbd = np.max(mu, 1 - mu)
-    x_mix = (s_x * lmbd) + (t_x * (1 - lmbd))
-    y_mix = (s_y * lmbd) + (t_y * (1 - lmbd))
+    lmbdx = lmbd.reshape(lmbd.shape[0],1,1,1)
+    lmbdy = lmbd.reshape(lmbd.shape[0],1)
+    x_mix = (s_x * lmbdx) + (t_x * (1 - lmbdx))
+    y_mix = (s_y * lmbdy) + (t_y * (1 - lmbdy))
     return x_mix, y_mix
