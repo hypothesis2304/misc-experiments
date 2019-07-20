@@ -87,9 +87,18 @@ def plot_grad_flow(named_parameters):
 
 def get_predictions(model, input):
     -, preds = model(inputs)
-    return preds.detach_()
+    _, pseudo_pred = torch.max(preds, 1)
+    pseudo_labels = torch.nn.functional.one_hot(pseudo_pred, num_class).type(tensor_type)
+    return pseudo_labels.detach_()
 
 def kl_loss(preds, labels):
     pred = F.log_softmax(preds, dim=1)
     label = F.softmax(labels, dim=1)
     return F.kl_div(pred, label) / preds.size(0)
+
+def sharpen(prob_vector, T = 3):
+    prob_vector = prob_vector**(1/T)
+    total = torch.sum(prob_vector, dim=1)
+    total = total.view(total.size(0), 1)
+    sharpened = prob_vector / total
+    return sharpened
