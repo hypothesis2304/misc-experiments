@@ -29,7 +29,7 @@ os.environ['PYTHONHASHSEED'] = '42'
 
 
 def train(config):
-    base_network = network.ResNetFc('ResNet50', use_bottleneck=True, bottleneck_dim=config["bottleneck_dim"], new_cls=True)
+    base_network = network.ResNetFc('ResNet50', use_bottleneck=True, bottleneck_dim=config["bottleneck_dim"], new_cls=True, class_num=config["class_num"])
     ad_net = network.AdversarialNetwork(config["bottleneck_dim"], config["hidden_dim"])
 
     base_network = base_network.cuda()
@@ -99,23 +99,31 @@ def train(config):
 
         inputs_source, labels_source = iter_source.next()
         inputs_target, labels_target = iter_target.next()
-        inputs_cut, labels_cut = cutmix(base_network, inputs_source, labels_source, inputs_target, config["alpha"])
-        inputs_mix, labels_mix = mixup(base_network, inputs_source, labels_source, inputs_target, config["alpha"])
+
+        labels_src_one_hot = torch.nn.functional.one_hot(labels_source, config["class_num"]).type(tensor_type)
+
+        inputs_cut, labels_cut = cutmix(base_network, inputs_source, labels_src_one_hot, inputs_target, config["alpha"])
+        inputs_mix, labels_mix = mixup(base_network, inputs_source, labels_src_one_hot, inputs_target, config["alpha"])
         inputs_source, inputs_target, labels_source = inputs_source.cuda(), inputs_target.cuda(), labels_source.cuda()
 
         features_source, outputs_source = base_network(inputs_source)
         features_target, outputs_target = base_network(inputs_target)
+        features_cut,    outputs_cut    = base_network(inputs_cut)
+        features_mix,    outputs_mix    = base_network(inputs_mix)
+
         features = torch.cat((features_source, features_target), dim=0)
         outputs = torch.cat((outputs_source, outputs_target), dim=0)
         softmax_out = nn.Softmax(dim=1)(outputs)
 
         if config["method"] == 'DANN':
             transfer_loss = loss.DANN(features, ad_net)
+            cut_loss = utils.kl_loss(outputs_cut, labels_cut)
+            mix_loss = utils.kl_loss(outputs_mix, labels_mix)
         else:
             raise ValueError('Method cannot be recognized.')
 
         classifier_loss = nn.CrossEntropyLoss()(outputs_source, labels_source)
-        total_loss = transfer_loss + classifier_loss
+        total_loss = transfer_loss + classifier_loss + cut_loss + mix_loss
         total_loss.backward()
         optimizer.step()
     torch.save(best_model, osp.join(config["output_path"], "best_model.pth.tar"))
@@ -159,10 +167,10 @@ if __name__ == "__main__":
         elif ("amazon" in args.s_dset_path and "dslr" in args.t_dset_path) or \
              ("dslr" in args.s_dset_path and "webcam" in args.t_dset_path):
             config["optimizer"]["lr_param"]["lr"] = 0.0003
-        class_num = 31
+        config["class_num"] = 31
     elif config["dset"] == "office-home":
         config["optimizer"]["lr_param"]["lr"] = 0.001
-        class_num = 65
+        config["class_num"] = 65
 
 
     # train config
