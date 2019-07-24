@@ -85,11 +85,15 @@ def plot_grad_flow(named_parameters):
                 Line2D([0], [0], color="k", lw=4)], ['max-gradient', 'mean-gradient', 'zero-gradient'])
 
 
-def get_predictions(model, input):
-    -, preds = model(inputs)
-    _, pseudo_pred = torch.max(preds, 1)
-    pseudo_labels = torch.nn.functional.one_hot(pseudo_pred, num_class).type(tensor_type)
-    return pseudo_labels.detach_()
+def get_predictions(model, inputs, num_class, temperature):
+    _, preds = model(inputs)
+    preds = preds.detach_()
+    if temperature > 0:
+        pseudo_labels = sharpen(nn.Softmax(dim=1)(preds), temperature)
+    else:
+        _, pseudo_pred = torch.max(preds, 1)
+        pseudo_labels = torch.nn.functional.one_hot(pseudo_pred, num_class)
+    return pseudo_labels
 
 def kl_loss(preds, labels):
     pred = F.log_softmax(preds, dim=1)
@@ -102,3 +106,20 @@ def sharpen(prob_vector, T = 3):
     total = total.view(total.size(0), 1)
     sharpened = prob_vector / total
     return sharpened
+
+def generate_bbox(size, lam):
+    W = size[2]
+    H = size[3]
+    cut_ratio = np.sqrt(1. - lam)
+    cut_w = np.int(W * cut_ratio)
+    cut_h = np.int(H * cut_ratio)
+
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+
+    return bbx1, bby1, bbx2, bby2
