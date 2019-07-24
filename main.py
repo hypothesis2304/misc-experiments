@@ -18,6 +18,7 @@ from tqdm import tqdm, trange
 import copy
 import random
 from aug import *
+import utils
 
 random.seed(42)
 torch.manual_seed(42)
@@ -86,6 +87,8 @@ def train(config):
             log_str = "iter: {:05d}, precision: {:.5f}".format(i, temp_acc)
             config["out_file"].write(log_str+"\n")
             config["out_file"].flush()
+            # print("cut_loss: ", cut_loss.item())
+            print("mix_loss: ", mix_loss.item())
             print(log_str)
 
         base_network.train(True)
@@ -99,16 +102,15 @@ def train(config):
 
         inputs_source, labels_source = iter_source.next()
         inputs_target, labels_target = iter_target.next()
-
-        labels_src_one_hot = torch.nn.functional.one_hot(labels_source, config["class_num"]).type(tensor_type)
-
-        inputs_cut, labels_cut = cutmix(base_network, inputs_source, labels_src_one_hot, inputs_target, config["alpha"])
-        inputs_mix, labels_mix = mixup(base_network, inputs_source, labels_src_one_hot, inputs_target, config["alpha"])
         inputs_source, inputs_target, labels_source = inputs_source.cuda(), inputs_target.cuda(), labels_source.cuda()
+        labels_src_one_hot = torch.nn.functional.one_hot(labels_source, config["class_num"]).float()
+
+        # inputs_cut, labels_cut = cutmix(base_network, inputs_source, labels_src_one_hot, inputs_target, config["alpha"], config["class_num"])
+        inputs_mix, labels_mix = mixup(base_network, inputs_source, labels_src_one_hot, inputs_target, config["alpha"], config["class_num"], config["temperature"])
 
         features_source, outputs_source = base_network(inputs_source)
         features_target, outputs_target = base_network(inputs_target)
-        features_cut,    outputs_cut    = base_network(inputs_cut)
+        # features_cut,    outputs_cut    = base_network(inputs_cut)
         features_mix,    outputs_mix    = base_network(inputs_mix)
 
         features = torch.cat((features_source, features_target), dim=0)
@@ -117,13 +119,13 @@ def train(config):
 
         if config["method"] == 'DANN':
             transfer_loss = loss.DANN(features, ad_net)
-            cut_loss = utils.kl_loss(outputs_cut, labels_cut)
-            mix_loss = utils.kl_loss(outputs_mix, labels_mix)
+            # cut_loss = utils.kl_loss(outputs_cut, labels_cut.detach())
+            mix_loss = utils.kl_loss(outputs_mix, labels_mix.detach())
         else:
             raise ValueError('Method cannot be recognized.')
 
         classifier_loss = nn.CrossEntropyLoss()(outputs_source, labels_source)
-        total_loss = transfer_loss + classifier_loss + cut_loss + mix_loss
+        total_loss = transfer_loss + classifier_loss + (5*mix_loss)
         total_loss.backward()
         optimizer.step()
     torch.save(best_model, osp.join(config["output_path"], "best_model.pth.tar"))
@@ -136,8 +138,8 @@ if __name__ == "__main__":
     parser.add_argument('--gpu_id', type=str, nargs='?', default='0', help="device id to run")
     parser.add_argument('--net', type=str, default='ResNet50', choices=["ResNet18", "ResNet34", "ResNet50", "ResNet101", "ResNet152", "VGG11", "VGG13", "VGG16", "VGG19", "VGG11BN", "VGG13BN", "VGG16BN", "VGG19BN", "AlexNet"])
     parser.add_argument('--dset', type=str, default='office', choices=['office', 'image-clef', 'visda', 'office-home'], help="The dataset or source dataset used")
-    parser.add_argument('--s_dset_path', type=str, default='./data/office/webcam_list.txt', help="The source dataset path list")
-    parser.add_argument('--t_dset_path', type=str, default='./data/office/amazon_list.txt', help="The target dataset path list")
+    parser.add_argument('--s_dset_path', type=str, default='./data/office/amazon_list.txt', help="The source dataset path list")
+    parser.add_argument('--t_dset_path', type=str, default='./data/office/dslr_list.txt', help="The target dataset path list")
     parser.add_argument('--test_interval', type=int, default=500, help="interval of two continuous test phase")
     parser.add_argument('--snapshot_interval', type=int, default=5000, help="interval of two continuous output model")
     parser.add_argument('--output_dir', type=str, default='san', help="output directory of our model (in ../snapshot directory)")
@@ -146,9 +148,10 @@ if __name__ == "__main__":
     parser.add_argument('--num_iterations', type=int, default=100004, help="number of iteration model should run")
     parser.add_argument('--test_size', type=int, default=4, help="batch_size for testing data")
     parser.add_argument('--alpha', type=int, default=1, help="for mixup and cutmix")
-    parser.add_argument('--batch_size', type=int, default=12, help="batch_size for training data")
+    parser.add_argument('--batch_size', type=int, default=16, help="batch_size for training data")
     parser.add_argument('--bottleneck_dim', type=int, default=256, help="size of bottleneck after feature_extractor")
     parser.add_argument('--hidden_dim', type=int, default=1024, help="size of hidden layer after feature_extractor")
+    parser.add_argument('--temperature', type=float, default=0.5, help="temperature to sharpen the pseudo labels")
     args = parser.parse_args()
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
     #os.environ["CUDA_VISIBLE_DEVICES"] = '0,1,2,3'
@@ -187,6 +190,7 @@ if __name__ == "__main__":
     config["bottleneck_dim"] = args.bottleneck_dim
     config["hidden_dim"] = args.hidden_dim
     config["output_path"] = "experiments/" + args.output_dir
+    config["temperature"] = args.temperature
     if not osp.exists(config["output_path"]):
         os.system("mkdir -p " + config["output_path"])
     config["out_file"] = open(osp.join(config["output_path"], "log.txt"), "w")
